@@ -42,6 +42,12 @@ typedef struct PipelineData {
   guint file_limit_callback_id;
   guint udp_channel_watch_id;
   gulong metadata_probe_id;
+
+  // Event camera source fields
+  GIOChannel   *faery_channel;
+  guint         faery_watch_id;
+  GPid          faery_feeder_pid;
+  GstClockTime  faery_pts;       // running PTS for appsrc frames
   
   // pipeline monitoring things -- not gstreamer best practice, but fine for now
   // TODO: monitor the pipeline from the media bin or GstBus directly

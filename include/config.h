@@ -22,6 +22,11 @@ typedef struct _ControlData {
   char *location;
   char *hostname;
 
+  char   *sensorType;           // "pylon" (default) or "event_camera"
+  int     eventCameraWidth;     // default 640
+  int     eventCameraHeight;    // default 480
+  int     eventCameraFrameRate; // default 30
+
   /*Pointer to first hScript struct*/
   struct _HardwareScripts *head;
 

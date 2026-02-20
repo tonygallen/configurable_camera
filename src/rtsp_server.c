@@ -17,6 +17,7 @@
 #include "pipeline.h"
 #include "udp_server.h"
 #include "rtsp_server.h"
+#include "event_camera_source.h"
 
 #define RAW_TIMEOUT 30
 
@@ -31,6 +32,12 @@ void cleanup_RTSP_media(PipelineData *pipeline_data) {
   	pipeline_data->media = NULL;
 
 	stop_record_raw(pipeline_data);
+
+	// clean up event camera source if applicable
+	if (pipeline_data->control_data->sensorType != NULL &&
+	    strcmp(pipeline_data->control_data->sensorType, "event_camera") == 0) {
+		cleanup_event_camera_source(pipeline_data);
+	}
 
  	// removing the metadata pad probe
  	if (pipeline_data->metadata_probe_id != 0) {
@@ -94,7 +101,11 @@ void media_configure(GstRTSPMediaFactory *factory, GstRTSPMedia *media,
     g_print("Setting up RTSP media.\n");
     
     PipelineData *pipeline_data = user_data;
-    SensorStaticInfo *ssi;
+    ControlData *control_data = pipeline_data->control_data;
+    SensorStaticInfo *ssi = NULL;
+
+    int is_event_camera = (control_data->sensorType != NULL &&
+                           strcmp(control_data->sensorType, "event_camera") == 0);
     
     pipeline_data->media = media;
     
@@ -108,24 +119,33 @@ void media_configure(GstRTSPMediaFactory *factory, GstRTSPMedia *media,
     /* get the element (bin) used for providing the streams of the media */
     pipeline_data->media_bin = media_bin = gst_rtsp_media_get_element(media);
 
-    // set up the sensor, get the setup information
+    // set up the source element
     pipeline_data->source = 
         gst_bin_get_by_name_recurse_up(GST_BIN(media_bin), "source");
 
-    ssi = getSensorStaticInfo(pipeline_data->source);
+    if (is_event_camera) {
+        // Event camera: set up the appsrc via the faery frame feeder subprocess
+        if (setup_event_camera_source(pipeline_data) != 0) {
+            timestamp_prefix_err();
+            g_printerr("Event camera source setup failed.\n");
+            goto cleanup;
+        }
+    } else {
+        // Pylon camera: query sensor static info and validate
+        ssi = getSensorStaticInfo(pipeline_data->source);
 
-    if (ssi == NULL) {
-        timestamp_prefix_err();
-        g_printerr("Sensor connection failed.\n");
-        goto cleanup;
+        if (ssi == NULL) {
+            timestamp_prefix_err();
+            g_printerr("Sensor connection failed.\n");
+            goto cleanup;
+        }
+        if (strcmp(ssi->sensor_setup_info->name,
+            pipeline_data->sensor_setup_info->name) != 0) {
+            timestamp_prefix_err();
+            g_printerr("Current sensor has not been set up. Please run sensor_setup.\n");
+            goto cleanup_ssi;
+        }
     }
-    if (strcmp(ssi->sensor_setup_info->name,
-        pipeline_data->sensor_setup_info->name) != 0) {
-        timestamp_prefix_err();
-        g_printerr("Current sensor has not been set up. Please run sensor_setup.\n");
-        goto cleanup_ssi;
-    }
-
 
     // get the raw recording elements if they exist
     if (pipeline_data->control_data->recordRaw) {
@@ -161,32 +181,48 @@ void media_configure(GstRTSPMediaFactory *factory, GstRTSPMedia *media,
 
     time_t timestamp = time(NULL);
 
-    char *sensor_metadata_filepath = g_strdup_printf("%s%ld_%s", recording_dir, timestamp, SENSOR_METADATA);
+    if (!is_event_camera) {
+        // Write sensor static metadata (pylon only)
+        char *sensor_metadata_filepath = g_strdup_printf("%s%ld_%s", recording_dir,
+                                                          timestamp, SENSOR_METADATA);
 
-    char *sensor_setup_json = sensorStaticInfoJSON(ssi);
+        char *sensor_setup_json = sensorStaticInfoJSON(ssi);
 
-    FILE *sensor_metadata_file;
-    sensor_metadata_file = fopen(sensor_metadata_filepath, "w");
-    if (sensor_metadata_file == NULL) {
-        timestamp_prefix_err();
-        g_printerr("Failed to open sensor metadata file.\n");
-        goto cleanup_sensor_metadata;
+        FILE *sensor_metadata_file;
+        sensor_metadata_file = fopen(sensor_metadata_filepath, "w");
+        if (sensor_metadata_file == NULL) {
+            timestamp_prefix_err();
+            g_printerr("Failed to open sensor metadata file.\n");
+            free(sensor_setup_json);
+            sensor_setup_json = NULL;
+            g_free(sensor_metadata_filepath);
+            sensor_metadata_filepath = NULL;
+            free(recording_dir);
+            recording_dir = NULL;
+            goto cleanup_ssi;
+        }
+        int rc = fputs(sensor_setup_json, sensor_metadata_file);
+        if (rc == EOF) {
+            timestamp_prefix_err();
+            g_printerr("Failed to write sensor setup json to recording directory.\n");
+            fclose(sensor_metadata_file);
+            free(sensor_setup_json);
+            sensor_setup_json = NULL;
+            g_free(sensor_metadata_filepath);
+            sensor_metadata_filepath = NULL;
+            free(recording_dir);
+            recording_dir = NULL;
+            goto cleanup_ssi;
+        }
+
+        fclose(sensor_metadata_file);
+        free(sensor_setup_json);
+        sensor_setup_json = NULL;
+        g_free(sensor_metadata_filepath);
+        sensor_metadata_filepath = NULL;
+        freeSensorStaticInfo(ssi);
+        ssi = NULL;
     }
-    int rc = fputs(sensor_setup_json, sensor_metadata_file);
-    if (rc == EOF) {
-        timestamp_prefix_err();
-        g_printerr("Failed to write sensor setup json to recording directory.\n");
-        goto cleanup_sensor_metadata;
-    }
-
-    // free all the sensor setup metadata file stuff
-    fclose(sensor_metadata_file);
-    free(sensor_setup_json);
-    sensor_setup_json = NULL;
-    g_free(sensor_metadata_filepath);
-    sensor_metadata_filepath = NULL;
-    freeSensorStaticInfo(ssi);
-    ssi = NULL;
 
     char *frame_metadata_filepath = g_strdup_printf("%s%ld_%s", recording_dir, timestamp, FRAME_METADATA);
     free(recording_dir);
@@ -194,7 +230,6 @@ void media_configure(GstRTSPMediaFactory *factory, GstRTSPMedia *media,
     if (frame_metadata_filepath == NULL) {
         timestamp_prefix_err();
         g_printerr("Failed to format frame level metadata filepath.\n");
-        // everything above this should be free now
         goto cleanup;
     }
 
@@ -208,14 +243,15 @@ void media_configure(GstRTSPMediaFactory *factory, GstRTSPMedia *media,
     free(frame_metadata_filepath);
     frame_metadata_filepath = NULL;
 
-    // install the frame-level metadata probe at the source element
+    if (!is_event_camera) {
+        // install the frame-level metadata probe at the source element (pylon only)
+        src_pad = gst_element_get_static_pad(pipeline_data->source, "src"); 
+        pipeline_data->metadata_probe_id = gst_pad_add_probe(src_pad, GST_PAD_PROBE_TYPE_BUFFER,
+            (GstPadProbeCallback) frame_level_metadata, (gpointer) pipeline_data, 
+            (GDestroyNotify) metadata_cleanup);
 
-    src_pad = gst_element_get_static_pad(pipeline_data->source, "src"); 
-    pipeline_data->metadata_probe_id = gst_pad_add_probe(src_pad, GST_PAD_PROBE_TYPE_BUFFER,
-        (GstPadProbeCallback) frame_level_metadata, (gpointer) pipeline_data, 
-        (GDestroyNotify) metadata_cleanup);
-
-    gst_object_unref(src_pad);
+        gst_object_unref(src_pad);
+    }
 
     // TODO: gstreamer best practice is to monitor pipeline state with the pipeline itself, not a separate variable
     pipeline_data->is_streaming = TRUE;
@@ -226,14 +262,6 @@ void media_configure(GstRTSPMediaFactory *factory, GstRTSPMedia *media,
 
     return;
 
-    cleanup_sensor_metadata:
-        free(sensor_setup_json);
-        sensor_setup_json = NULL;
-        g_free(sensor_metadata_filepath);
-        sensor_metadata_filepath = NULL;
-    cleanup_recording_dir:
-        free(recording_dir);
-        recording_dir = NULL;
     cleanup_ssi:
         freeSensorStaticInfo(ssi);
     cleanup:

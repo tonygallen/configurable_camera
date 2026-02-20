@@ -110,6 +110,14 @@ ControlData *read_ControlData(cJSON *config) {
       }
     } else if (strcmp(ob->string, "Hardware Scripts") == 0) {
       control_data->head = read_HardwareScripts(ob);
+    } else if (strcmp(ob->string, "Sensor Type") == 0) {
+      control_data->sensorType = strdup(ob->valuestring);
+    } else if (strcmp(ob->string, "Event Camera Width") == 0) {
+      control_data->eventCameraWidth = ob->valueint;
+    } else if (strcmp(ob->string, "Event Camera Height") == 0) {
+      control_data->eventCameraHeight = ob->valueint;
+    } else if (strcmp(ob->string, "Event Camera Frame Rate") == 0) {
+      control_data->eventCameraFrameRate = ob->valueint;
     } else {
       printf("Unknown field in config.json, Control Data: %s\n", ob->string);
       goto err;
@@ -176,6 +184,7 @@ void free_ControlData(ControlData *data) {
   free(data->rawStorage);
   free(data->hostname);
   free(data->broadcastAddress);
+  free(data->sensorType);
   free(data);
 }
 
