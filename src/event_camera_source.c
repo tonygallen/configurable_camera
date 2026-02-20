@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <glib.h>
@@ -175,6 +176,8 @@ void cleanup_event_camera_source(PipelineData *pipeline_data) {
 
     if (pipeline_data->faery_feeder_pid != 0) {
         kill(pipeline_data->faery_feeder_pid, SIGTERM);
+        // Wait for the process to exit to avoid zombies
+        waitpid((pid_t)pipeline_data->faery_feeder_pid, NULL, 0);
         g_spawn_close_pid(pipeline_data->faery_feeder_pid);
         pipeline_data->faery_feeder_pid = 0;
     }

@@ -181,45 +181,35 @@ void media_configure(GstRTSPMediaFactory *factory, GstRTSPMedia *media,
 
     time_t timestamp = time(NULL);
 
+    char *sensor_metadata_filepath = NULL;
+    char *sensor_setup_json = NULL;
+    FILE *sensor_metadata_file = NULL;
+
     if (!is_event_camera) {
         // Write sensor static metadata (pylon only)
-        char *sensor_metadata_filepath = g_strdup_printf("%s%ld_%s", recording_dir,
-                                                          timestamp, SENSOR_METADATA);
+        sensor_metadata_filepath = g_strdup_printf("%s%ld_%s", recording_dir,
+                                                    timestamp, SENSOR_METADATA);
+        sensor_setup_json = sensorStaticInfoJSON(ssi);
 
-        char *sensor_setup_json = sensorStaticInfoJSON(ssi);
-
-        FILE *sensor_metadata_file;
         sensor_metadata_file = fopen(sensor_metadata_filepath, "w");
         if (sensor_metadata_file == NULL) {
             timestamp_prefix_err();
             g_printerr("Failed to open sensor metadata file.\n");
-            free(sensor_setup_json);
-            sensor_setup_json = NULL;
-            g_free(sensor_metadata_filepath);
-            sensor_metadata_filepath = NULL;
-            free(recording_dir);
-            recording_dir = NULL;
-            goto cleanup_ssi;
+            goto cleanup_sensor_metadata;
         }
         int rc = fputs(sensor_setup_json, sensor_metadata_file);
+        fclose(sensor_metadata_file);
+        sensor_metadata_file = NULL;
         if (rc == EOF) {
             timestamp_prefix_err();
             g_printerr("Failed to write sensor setup json to recording directory.\n");
-            fclose(sensor_metadata_file);
-            free(sensor_setup_json);
-            sensor_setup_json = NULL;
-            g_free(sensor_metadata_filepath);
-            sensor_metadata_filepath = NULL;
-            free(recording_dir);
-            recording_dir = NULL;
-            goto cleanup_ssi;
+            goto cleanup_sensor_metadata;
         }
 
-        fclose(sensor_metadata_file);
-        free(sensor_setup_json);
-        sensor_setup_json = NULL;
         g_free(sensor_metadata_filepath);
         sensor_metadata_filepath = NULL;
+        free(sensor_setup_json);
+        sensor_setup_json = NULL;
         freeSensorStaticInfo(ssi);
         ssi = NULL;
     }
@@ -262,6 +252,11 @@ void media_configure(GstRTSPMediaFactory *factory, GstRTSPMedia *media,
 
     return;
 
+    cleanup_sensor_metadata:
+        if (sensor_metadata_file != NULL) fclose(sensor_metadata_file);
+        free(sensor_setup_json);
+        g_free(sensor_metadata_filepath);
+        free(recording_dir);
     cleanup_ssi:
         freeSensorStaticInfo(ssi);
     cleanup:
