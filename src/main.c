@@ -74,18 +74,23 @@ int main(int argc, char* argv[]){
     UDPListener *udp_listener;
     PipelineData pipeline_data;
     StatusBroadcast status_broadcast;
+    gchar *config_path_for_copy = NULL;
 
     loop = g_main_loop_new(NULL, FALSE);
 
     // ---------- Read in config first to determine sensor type ----------
     int read_config_ret = readConfigFile(config_file, &control_data, &metadata);
 
+    // Save the path now so we can copy it to the recording directory as startup
+    // metadata later, after config_file has been freed.
+    config_path_for_copy = g_strdup(config_file);
     g_free(config_file);
 
     if (read_config_ret != 0) {
         timestamp_prefix_err();
         g_printerr("Couldn't read config file.\n");
         err_code = EXIT_FAILURE;
+        g_free(config_path_for_copy);
         goto cleanup_loop;
     }
     timestamp_prefix_log();
@@ -201,7 +206,9 @@ int main(int argc, char* argv[]){
         goto cleanup_pipeline_string;
     }
 
-    int n = copy_file(DEFAULT_CONFIG_FILEPATH, startup_metadata_filepath);
+    int n = copy_file(config_path_for_copy, startup_metadata_filepath);
+    g_free(config_path_for_copy);
+    config_path_for_copy = NULL;
     g_free(startup_metadata_filepath);
     if (n != 0) {
         timestamp_prefix_err();
@@ -390,6 +397,7 @@ int main(int argc, char* argv[]){
 	cleanup_pipeline_string:
 		g_free(pipeline_string);
     cleanup_config:
+        g_free(config_path_for_copy);
         free_Metadata(metadata);
         free_ControlData(control_data);
     cleanup_sensor_setup_info:

@@ -44,6 +44,12 @@ This file is read when the program is run, and controls/affects several parts of
         "Status Broadcast Port":    int,
         "Raw Time Limit":           int, 
         "RTSP Address":             str, (either an IP address or a network interface name, e.g. "eth1")
+        // ---- Event camera fields (omit for Basler/Pylon) ----
+        "Sensor Type":              str, ("event_camera" or omit for default Pylon mode)
+        "Event Camera Width":       int, (frame width in pixels, default 640)
+        "Event Camera Height":      int, (frame height in pixels, default 480)
+        "Event Camera Frame Rate":  int, (frames per second, default 30)
+        // ---- Hardware scripts ----
         "Hardware Scripts":[
             {
                 "Name":             str,
@@ -87,6 +93,17 @@ This data will make up the bulk of the program control flow settings, most of wh
 7. `"RTSP Address"`: This is the identity of the ethernet connection to the NVR. The value can either be the actual IP address used by this connection, or the name of the network interface of the physical ethernet port that is connected to the NVR (e.g. "eth0", "eth1", "eth2").
 8. `"Hardware Scripts"`: see [Peripheral Hardware Control](#peripheral-hardware-control)
 
+### Event camera config fields
+
+These fields are only relevant when `"Sensor Type"` is `"event_camera"`.  They may be omitted entirely when using a Basler/Pylon sensor.
+
+9. `"Sensor Type"`: set to `"event_camera"` to use an event camera source.  When omitted (or any other value), the program defaults to the Basler/Pylon pipeline.
+10. `"Event Camera Width"`: frame width in pixels.  Default: `640`.
+11. `"Event Camera Height"`: frame height in pixels.  Default: `480`.
+12. `"Event Camera Frame Rate"`: target frame rate in Hz.  Default: `30`.
+
+See [Event Camera Quickstart](Event_Camera.md) for a full walkthrough.
+
 ## Sensor JSON
 
 The `sensor_setup` executable must be run every time a new sensor is connected to the jetson. `sensor_setup` connects to the basler sensor and reads information necessary for setup, then writes it to a file: `configurable_code/sensor.json`. This process would normally be done at the beginning of the main program, but it's a quirk of the `pylonsrc` gstreamer element that it seemingly can only be created once in a program. 
@@ -101,7 +118,7 @@ TODO: include sensor.json template. Make the file a permanent part of the repo.
 
 This program uses the Gstreamer framework to create and configure media pipelines from the sensor to serve RTSP and record raw video locally. The RTSP stream is handled with the GstRTSPServer framework, which defines media factories (pipelines) which are created when an RTSP client (ideally, the NVR) requests a stream.
 
-The pipeline is defined in `pipeline.txt`, allowing for easy editing without having to recompile.
+For Basler/Pylon sensors the pipeline is defined in `pipeline.txt`.  For event cameras the pipeline is defined in `pipeline_event_camera.txt`.  Both files allow easy editing without having to recompile.
 
 ## Metadata
 
