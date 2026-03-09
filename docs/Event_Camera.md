@@ -28,16 +28,24 @@ make main
 
 > `sensor_setup` is for Basler sensors only — you do not need to build or run it.
 
-## 3. Create the recording storage directory
+## 3. Ensure the recording storage parent directory exists
 
-The program writes startup metadata to a subdirectory of `"Raw Storage"` on every launch (even when raw recording is disabled).  Create that directory before running:
+The program writes startup metadata into a subdirectory of `"Raw Storage"` on every launch (even when raw recording is disabled). It will automatically create `<raw_storage>/<date>/<hostname>/`, **but only if the parent directory already exists and is writable**.
+
+If you are using the default `/data/rec` path and `/data` is a mount point for an NVMe drive, make sure the drive is mounted and then run:
 
 ```bash
 sudo mkdir -p /data/rec
 sudo chown $USER /data/rec
 ```
 
-If you want to use a different path, change `"Raw Storage"` in `config.json` (see step 4) and create that directory instead.
+If `/data/rec` does not exist and cannot be created (e.g. the NVMe is not mounted), startup will fail with:
+
+```
+Failed to create recording directory '/data/rec/<date>/<hostname>/': No such file or directory
+```
+
+In that case either mount the NVMe first, or change `"Raw Storage"` in `config.json` to a path that does exist.
 
 ## 4. Configure `config.json`
 
@@ -174,8 +182,9 @@ screen -r camera   # attach to the screen session
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `Failed to create recording directory` | `"Raw Storage"` directory does not exist | `mkdir -p /data/rec` |
-| `Failed to copy startup config to metadata file` | Recording directory does not exist | `mkdir -p /data/rec` |
+| `Failed to create recording directory '/data/rec/...': No such file or directory` | `/data/rec` (the `"Raw Storage"` parent) does not exist — typically the NVMe drive is not mounted | Mount the NVMe and run `sudo mkdir -p /data/rec && sudo chown $USER /data/rec`, or change `"Raw Storage"` to a path that exists |
+| `Failed to create recording directory '/data/rec/...': Permission denied` | The `"Raw Storage"` path is not writable by the current user | `sudo chown $USER /data/rec` |
+| `Failed to copy startup config to metadata file` | Recording directory was created but the config file could not be copied | Check disk space and permissions |
 | `Failed to spawn faery frame feeder` | `python3` not in PATH, or `scripts/event_camera_frame_feeder.py` not found | Run `./main` from the repo root; confirm `which python3` works |
 | `Event camera source setup failed` | faery library not installed or camera not detected | Check `python3 scripts/event_camera_frame_feeder.py --help` runs; confirm the event camera is connected |
 | RTSP stream shows grey ramp pattern | faery is not installed (feeder uses fallback test pattern) | Install faery: see [faery documentation](https://github.com/neuromorphic-paris/faery) |
