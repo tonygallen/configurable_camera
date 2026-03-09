@@ -97,8 +97,7 @@ int main(int argc, char* argv[]){
     g_print("Successfully read config file, verify values are correct:\n");
     printConfigSummary(control_data, metadata, control_data->head);
 
-    int is_event_camera = (control_data->sensorType != NULL &&
-                           strcmp(control_data->sensorType, "event_camera") == 0);
+    int is_event_camera = is_event_camera_sensor(control_data);
 
     // Load sensor info from the setup file written by ./sensor_setup.
     // Not required for event camera mode.
@@ -231,6 +230,8 @@ int main(int argc, char* argv[]){
     pipeline_data.faery_watch_id = 0;
     pipeline_data.faery_feeder_pid = 0;
     pipeline_data.faery_pts = 0;
+    pipeline_data.faery_partial_buf = NULL;
+    pipeline_data.faery_bytes_accumulated = 0;
 
     // Set up ancillary metadata pipeline
     pipeline_data.csv_pipeline = gst_pipeline_new("csv_pipeline");

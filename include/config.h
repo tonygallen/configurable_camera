@@ -96,4 +96,10 @@ char *gst_pipeline_txt_gen(const char *filepath, int rtsp_only);
 
 int replace_with_address(char** interface_name, char** broadcast_address);
 
+/* Returns 1 if the config describes an event camera sensor, 0 otherwise. */
+static inline int is_event_camera_sensor(const ControlData *control_data) {
+    return control_data->sensorType != NULL &&
+           strcmp(control_data->sensorType, "event_camera") == 0;
+}
+
 #endif

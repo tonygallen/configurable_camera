@@ -34,8 +34,7 @@ void cleanup_RTSP_media(PipelineData *pipeline_data) {
 	stop_record_raw(pipeline_data);
 
 	// clean up event camera source if applicable
-	if (pipeline_data->control_data->sensorType != NULL &&
-	    strcmp(pipeline_data->control_data->sensorType, "event_camera") == 0) {
+	if (is_event_camera_sensor(pipeline_data->control_data)) {
 		cleanup_event_camera_source(pipeline_data);
 	}
 
@@ -104,8 +103,7 @@ void media_configure(GstRTSPMediaFactory *factory, GstRTSPMedia *media,
     ControlData *control_data = pipeline_data->control_data;
     SensorStaticInfo *ssi = NULL;
 
-    int is_event_camera = (control_data->sensorType != NULL &&
-                           strcmp(control_data->sensorType, "event_camera") == 0);
+    int is_event_camera = is_event_camera_sensor(control_data);
     
     pipeline_data->media = media;
     

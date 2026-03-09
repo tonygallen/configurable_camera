@@ -34,44 +34,61 @@ static gboolean faery_frame_received_callback(GIOChannel *source,
 
     gsize frame_size = (gsize)(width * height * 3);
 
-    guint8 *buf_data = g_malloc(frame_size);
-    if (buf_data == NULL) {
+    // Allocate the partial-frame accumulator on first use.
+    if (pipeline_data->faery_partial_buf == NULL) {
+        pipeline_data->faery_partial_buf = g_malloc(frame_size);
+        if (pipeline_data->faery_partial_buf == NULL) {
+            timestamp_prefix_err();
+            g_printerr("Failed to allocate frame buffer for faery frame.\n");
+            return G_SOURCE_CONTINUE;
+        }
+        pipeline_data->faery_bytes_accumulated = 0;
+    }
+
+    // Read as many bytes as are available right now into the accumulator.
+    gint fd = g_io_channel_unix_get_fd(source);
+    guint8 *buf = pipeline_data->faery_partial_buf;
+    gsize accumulated = pipeline_data->faery_bytes_accumulated;
+
+    gssize n = read(fd, buf + accumulated, frame_size - accumulated);
+    if (n < 0) {
+        if (errno == EINTR || errno == EAGAIN) {
+            // No data available right now — wait for the next G_IO_IN firing.
+            return G_SOURCE_CONTINUE;
+        }
         timestamp_prefix_err();
-        g_printerr("Failed to allocate frame buffer for faery frame.\n");
+        g_printerr("Error reading from faery channel: %s\n", strerror(errno));
+        return G_SOURCE_CONTINUE;
+    }
+    if (n == 0) {
+        // EOF — feeder subprocess closed its stdout
+        timestamp_prefix_err();
+        g_printerr("Faery frame feeder closed unexpectedly.\n");
+        return G_SOURCE_REMOVE;
+    }
+    accumulated += (gsize)n;
+    pipeline_data->faery_bytes_accumulated = accumulated;
+
+    if (accumulated < frame_size) {
+        // Don't have a complete frame yet; wait for the next G_IO_IN.
         return G_SOURCE_CONTINUE;
     }
 
-    // Read exactly frame_size bytes from the pipe fd
-    gint fd = g_io_channel_unix_get_fd(source);
-    gsize bytes_read = 0;
-    while (bytes_read < frame_size) {
-        gssize n = read(fd, buf_data + bytes_read, frame_size - bytes_read);
-        if (n < 0) {
-            if (errno == EINTR)
-                continue;
-            timestamp_prefix_err();
-            g_printerr("Error reading from faery channel: %s\n", strerror(errno));
-            g_free(buf_data);
-            return G_SOURCE_CONTINUE;
-        }
-        if (n == 0) {
-            // EOF — feeder subprocess closed its stdout
-            timestamp_prefix_err();
-            g_printerr("Faery frame feeder closed unexpectedly.\n");
-            g_free(buf_data);
-            return G_SOURCE_REMOVE;
-        }
-        bytes_read += n;
-    }
+    // We have a complete frame.  Wrap it in a GstBuffer (takes ownership).
+    // Reset the accumulator first so the next frame starts fresh even if
+    // we return early due to a buffer-allocation failure.
+    pipeline_data->faery_bytes_accumulated = 0;
 
-    // Wrap the raw pixel data in a GstBuffer (takes ownership of buf_data)
-    GstBuffer *gst_buf = gst_buffer_new_wrapped(buf_data, frame_size);
+    GstBuffer *gst_buf = gst_buffer_new_wrapped(buf, frame_size);
     if (gst_buf == NULL) {
         timestamp_prefix_err();
         g_printerr("Failed to create GstBuffer for faery frame.\n");
-        g_free(buf_data);
+        g_free(buf);
+        pipeline_data->faery_partial_buf = NULL;
         return G_SOURCE_CONTINUE;
     }
+    // buf ownership transferred to gst_buf; clear the pointer.
+    pipeline_data->faery_partial_buf = NULL;
 
     GST_BUFFER_PTS(gst_buf)      = pipeline_data->faery_pts;
     GST_BUFFER_DURATION(gst_buf) = GST_SECOND / frame_rate;
@@ -142,7 +159,9 @@ int setup_event_camera_source(PipelineData *pipeline_data) {
     g_io_channel_set_encoding(pipeline_data->faery_channel, NULL, NULL);
     g_io_channel_set_flags(pipeline_data->faery_channel, G_IO_FLAG_NONBLOCK, NULL);
 
-    pipeline_data->faery_pts      = 0;
+    pipeline_data->faery_pts              = 0;
+    pipeline_data->faery_partial_buf      = NULL;
+    pipeline_data->faery_bytes_accumulated = 0;
     pipeline_data->faery_watch_id = g_io_add_watch(
         pipeline_data->faery_channel, G_IO_IN,
         (GIOFunc)faery_frame_received_callback, pipeline_data);
@@ -180,6 +199,13 @@ void cleanup_event_camera_source(PipelineData *pipeline_data) {
         waitpid((pid_t)pipeline_data->faery_feeder_pid, NULL, 0);
         g_spawn_close_pid(pipeline_data->faery_feeder_pid);
         pipeline_data->faery_feeder_pid = 0;
+    }
+
+    // Free any partially-accumulated frame data
+    if (pipeline_data->faery_partial_buf != NULL) {
+        g_free(pipeline_data->faery_partial_buf);
+        pipeline_data->faery_partial_buf = NULL;
+        pipeline_data->faery_bytes_accumulated = 0;
     }
 
     timestamp_prefix_log();
