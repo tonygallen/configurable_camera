@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--driver", type=str, default="prophesee", help="Camera driver name")
     parser.add_argument("--manufacturer", type=str, default="prophesee", help="Camera manufacturer")
     parser.add_argument("--colormap", type=str, default="magma", help="Colormap for rendering")
-    parser.add_argument("--tau", type=float, default=0.1, help="Time constant for decay (seconds)")
+    parser.add_argument("--tau", type=str, default="00:00:00.2", help="Time constant for decay (seconds)")
     parser.add_argument("--decay", type=str, default="exponential", help="Decay type")
     parser.add_argument("--diff_on", type=int, default=200, help="Bias diff on")
     parser.add_argument("--diff_off", type=int, default=150, help="Bias diff off")
@@ -43,7 +43,7 @@ def main():
             )
             .regularize(frequency_hz=args.frame_rate)
             .render(
-                colormap=args.colormap,
+                colormap=faery.colormaps.starry_night,
                 tau=args.tau,
                 decay=args.decay,
             )
