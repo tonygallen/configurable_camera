@@ -12,6 +12,7 @@ pipeline can be exercised without hardware.
 import argparse
 import sys
 import time
+import neuromorphic_drivers as nd
 
 
 def main():
@@ -19,20 +20,26 @@ def main():
     parser.add_argument("--width", type=int, default=640, help="Frame width in pixels")
     parser.add_argument("--height", type=int, default=480, help="Frame height in pixels")
     parser.add_argument("--frame-rate", type=int, default=30, help="Target frame rate (Hz)")
-    parser.add_argument("--driver", type=str, default="inivation", help="Camera driver name")
-    parser.add_argument("--manufacturer", type=str, default="inivation", help="Camera manufacturer")
+    parser.add_argument("--driver", type=str, default="prophesee", help="Camera driver name")
+    parser.add_argument("--manufacturer", type=str, default="prophesee", help="Camera manufacturer")
     parser.add_argument("--colormap", type=str, default="magma", help="Colormap for rendering")
     parser.add_argument("--tau", type=float, default=0.1, help="Time constant for decay (seconds)")
     parser.add_argument("--decay", type=str, default="exponential", help="Decay type")
+    parser.add_argument("--diff_on", type=int, default=200, help="Bias diff on")
+    parser.add_argument("--diff_off", type=int, default=150, help="Bias diff off")
     args = parser.parse_args()
 
     try:
         import faery
+        
+        nd_config = nd.prophesee_evk4.Configuration()
+        nd_config.biases.diff_off = args.diff_off
+        nd_config.biases.diff_on = args.diff_on
 
         stream = (
             faery.events_stream_from_camera(
-                driver=args.driver,
-                manufacturer=args.manufacturer,
+                driver="NeuromorphicDrivers",
+                nd_configuration=nd_config,
             )
             .regularize(frequency_hz=args.frame_rate)
             .render(
