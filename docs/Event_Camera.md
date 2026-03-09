@@ -28,6 +28,8 @@ make main
 
 > `sensor_setup` is for Basler sensors only — you do not need to build or run it.
 
+> **Always rebuild after pulling new code.** Several startup bugs were fixed in recent commits (including how the config file is located at runtime). If you have pulled updates since the last build, run `make main` again before launching.
+
 ## 3. Ensure the recording storage parent directory exists
 
 The program writes startup metadata into a subdirectory of `"Raw Storage"` on every launch (even when raw recording is disabled). It will automatically create `<raw_storage>/<date>/<hostname>/`, **but only if the parent directory already exists and is writable**.
@@ -184,7 +186,8 @@ screen -r camera   # attach to the screen session
 |---|---|---|
 | `Failed to create recording directory '/data/rec/...': No such file or directory` | `/data/rec` (the `"Raw Storage"` parent) does not exist — typically the NVMe drive is not mounted | Mount the NVMe and run `sudo mkdir -p /data/rec && sudo chown $USER /data/rec`, or change `"Raw Storage"` to a path that exists |
 | `Failed to create recording directory '/data/rec/...': Permission denied` | The `"Raw Storage"` path is not writable by the current user | `sudo chown $USER /data/rec` |
-| `Failed to copy startup config to metadata file` | Recording directory was created but the config file could not be copied | Check disk space and permissions |
+| `Failed to copy startup config to metadata file` | **Most common cause:** the binary was compiled before a recent fix and still looks for the config at the hardcoded path `/home/nvidia/configurable_camera/config.json`. **Run `make main` to rebuild**, then retry. | Rebuild: `make main` |
+| `Failed to copy startup config to metadata file` (after rebuilding) | The recording directory exists but files cannot be created inside it (permission denied or disk full) | Confirm permissions: `sudo chown -R $USER /data/rec`; check disk space: `df -h /data/rec` |
 | `Failed to spawn faery frame feeder` | `python3` not in PATH, or `scripts/event_camera_frame_feeder.py` not found | Run `./main` from the repo root; confirm `which python3` works |
 | `Event camera source setup failed` | faery library not installed or camera not detected | Check `python3 scripts/event_camera_frame_feeder.py --help` runs; confirm the event camera is connected |
 | RTSP stream shows grey ramp pattern | faery is not installed (feeder uses fallback test pattern) | Install faery: see [faery documentation](https://github.com/neuromorphic-paris/faery) |
