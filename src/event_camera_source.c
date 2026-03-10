@@ -19,6 +19,54 @@
 #define DEFAULT_EVENT_CAMERA_HEIGHT 480
 #define DEFAULT_EVENT_CAMERA_FRAMERATE 30
 
+/* Push one black (all-zeros) frame to keep the RTSP pipeline warm while the
+ * Python feeder subprocess is starting up.  Cancelled as soon as the first
+ * real frame arrives via the G_IO_IN watch.
+ */
+static gboolean push_priming_frame(gpointer data) {
+    PipelineData *pipeline_data = data;
+    ControlData *control_data = pipeline_data->control_data;
+
+    int width = control_data->eventCameraWidth > 0
+        ? control_data->eventCameraWidth : DEFAULT_EVENT_CAMERA_WIDTH;
+    int height = control_data->eventCameraHeight > 0
+        ? control_data->eventCameraHeight : DEFAULT_EVENT_CAMERA_HEIGHT;
+    int frame_rate = control_data->eventCameraFrameRate > 0
+        ? control_data->eventCameraFrameRate : DEFAULT_EVENT_CAMERA_FRAMERATE;
+
+    gsize frame_size = (gsize)(width * height * 3);
+
+    guint8 *black = g_malloc0(frame_size);  // all zeros = black
+    if (black == NULL) {
+        // Allocation failure is extremely unlikely; log once and keep trying.
+        timestamp_prefix_err();
+        g_printerr("Failed to allocate priming frame buffer.\n");
+        return G_SOURCE_CONTINUE;
+    }
+
+    GstBuffer *buf = gst_buffer_new_wrapped(black, frame_size);
+    if (buf == NULL) {
+        g_free(black);
+        timestamp_prefix_err();
+        g_printerr("Failed to wrap priming frame buffer.\n");
+        return G_SOURCE_CONTINUE;
+    }
+
+    GST_BUFFER_PTS(buf)      = pipeline_data->faery_pts;
+    GST_BUFFER_DURATION(buf) = GST_SECOND / frame_rate;
+    pipeline_data->faery_pts += GST_SECOND / frame_rate;
+
+    GstFlowReturn ret = gst_app_src_push_buffer(
+        GST_APP_SRC(pipeline_data->source), buf);
+    if (ret == GST_FLOW_FLUSHING || ret == GST_FLOW_EOS) {
+        // Pipeline is shutting down; stop the timer.
+        pipeline_data->faery_priming_timer_id = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    return G_SOURCE_CONTINUE;
+}
+
 static gboolean faery_frame_received_callback(GIOChannel *source,
                                                GIOCondition condition,
                                                gpointer data) {
@@ -74,8 +122,14 @@ static gboolean faery_frame_received_callback(GIOChannel *source,
         return G_SOURCE_CONTINUE;
     }
 
-    // We have a complete frame.  Wrap it in a GstBuffer (takes ownership).
-    // Reset the accumulator first so the next frame starts fresh even if
+    // We have a complete frame.  Cancel the priming timer now that real data
+    // has arrived (it may already have been cancelled on a previous frame).
+    if (pipeline_data->faery_priming_timer_id != 0) {
+        g_source_remove(pipeline_data->faery_priming_timer_id);
+        pipeline_data->faery_priming_timer_id = 0;
+    }
+
+    // Reset the accumulator so the next frame starts fresh even if
     // we return early due to a buffer-allocation failure.
     pipeline_data->faery_bytes_accumulated = 0;
 
@@ -162,6 +216,18 @@ int setup_event_camera_source(PipelineData *pipeline_data) {
     pipeline_data->faery_pts              = 0;
     pipeline_data->faery_partial_buf      = NULL;
     pipeline_data->faery_bytes_accumulated = 0;
+
+    // Start a timer that pushes black frames at approximately the configured
+    // frame rate so the pipeline stays warm and VLC doesn't time out waiting
+    // for the first real frame from the Python feeder (which takes 3-5 s to
+    // start).  The GLib timer interval is in whole milliseconds, so 30 fps
+    // gives 33 ms (≈33.33 ms); this small rounding does not affect PTS
+    // correctness because GST_BUFFER_DURATION is computed in nanoseconds.
+    pipeline_data->faery_priming_timer_id = g_timeout_add(
+        1000 / frame_rate,
+        push_priming_frame,
+        pipeline_data);
+
     pipeline_data->faery_watch_id = g_io_add_watch(
         pipeline_data->faery_channel, G_IO_IN,
         (GIOFunc)faery_frame_received_callback, pipeline_data);
@@ -173,6 +239,11 @@ int setup_event_camera_source(PipelineData *pipeline_data) {
 }
 
 void cleanup_event_camera_source(PipelineData *pipeline_data) {
+    if (pipeline_data->faery_priming_timer_id != 0) {
+        g_source_remove(pipeline_data->faery_priming_timer_id);
+        pipeline_data->faery_priming_timer_id = 0;
+    }
+
     if (pipeline_data->faery_watch_id != 0) {
         if (!g_source_remove(pipeline_data->faery_watch_id)) {
             timestamp_prefix_err();

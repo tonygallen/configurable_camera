@@ -50,6 +50,7 @@ typedef struct PipelineData {
   GstClockTime  faery_pts;           // running PTS for appsrc frames
   guint8       *faery_partial_buf;   // accumulates bytes for the current frame
   gsize         faery_bytes_accumulated; // bytes accumulated in faery_partial_buf
+  guint         faery_priming_timer_id; // GLib timer that pushes black frames until feeder starts
   
   // pipeline monitoring things -- not gstreamer best practice, but fine for now
   // TODO: monitor the pipeline from the media bin or GstBus directly
