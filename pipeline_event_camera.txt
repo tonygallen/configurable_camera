@@ -17,4 +17,10 @@ The pipeline description spans four lines of text, following the same structure 
  - The %d format placeholders are filled in with the event camera width, height, and frame rate.
    The four values (in order) are: width, height, framerate (appsrc caps), framerate (converter caps).
 
+Note: this pipeline does NOT need rawvideoparse or videoconvert before nvvidconv.
+The appsrc element has explicit caps (caps=video/x-raw,format=RGB,...) which fully describe
+every buffer pushed through it, so nvvidconv already knows the frame format.
+The standalone test script (scripts/test_event_camera_feeder.sh) DOES need rawvideoparse
+because it reads from a plain FIFO via fdsrc, which carries no GStreamer buffer metadata.
+
 The function gst_pipeline_txt_gen, implemented in src/config.c, is responsible for reading this file.
