@@ -21,6 +21,33 @@
 #define PIPELINE_LINE_SIZE 256
 #define PIPELINE_BUFFER_SIZE PIPELINE_TXT_LINES * PIPELINE_LINE_SIZE
 
+/*
+ * Create the full directory path, including all intermediate components.
+ * Equivalent to `mkdir -p path`.
+ * Returns 0 on success, -1 on failure (errno is set by the failing mkdir call).
+ */
+static int mkdirp(const char *path, mode_t mode) {
+  char tmp[4096];
+  size_t len = strlen(path);
+  if (len == 0 || len >= sizeof(tmp)) {
+    fprintf(stderr, "mkdirp: path too long or empty: %s\n", path);
+    return -1;
+  }
+  memcpy(tmp, path, len + 1);
+  // strip trailing slash so mkdir doesn't choke
+  if (tmp[len - 1] == '/') tmp[len - 1] = '\0';
+  // walk each component and create it if missing
+  for (char *p = tmp + 1; *p; p++) {
+    if (*p == '/') {
+      *p = '\0';
+      if (mkdir(tmp, mode) != 0 && errno != EEXIST) return -1;
+      *p = '/';
+    }
+  }
+  if (mkdir(tmp, mode) != 0 && errno != EEXIST) return -1;
+  return 0;
+}
+
 HardwareScripts *read_HardwareScript(cJSON *config) {
   /*
   HardwareScripts is a linked list data structure
@@ -110,6 +137,14 @@ ControlData *read_ControlData(cJSON *config) {
       }
     } else if (strcmp(ob->string, "Hardware Scripts") == 0) {
       control_data->head = read_HardwareScripts(ob);
+    } else if (strcmp(ob->string, "Sensor Type") == 0) {
+      control_data->sensorType = strdup(ob->valuestring);
+    } else if (strcmp(ob->string, "Event Camera Width") == 0) {
+      control_data->eventCameraWidth = ob->valueint;
+    } else if (strcmp(ob->string, "Event Camera Height") == 0) {
+      control_data->eventCameraHeight = ob->valueint;
+    } else if (strcmp(ob->string, "Event Camera Frame Rate") == 0) {
+      control_data->eventCameraFrameRate = ob->valueint;
     } else {
       printf("Unknown field in config.json, Control Data: %s\n", ob->string);
       goto err;
@@ -176,6 +211,7 @@ void free_ControlData(ControlData *data) {
   free(data->rawStorage);
   free(data->hostname);
   free(data->broadcastAddress);
+  free(data->sensorType);
   free(data);
 }
 
@@ -335,7 +371,6 @@ int format_recording_directory(ControlData *control_data, char **filepath_ptr) {
   *filepath_ptr = (char *) malloc(sizeof(char) * filepath_len);
 
   char *filepath = *filepath_ptr;
-  // set all to null so that intermediate directories can be created from valid substrings
   memset(filepath, '\0', filepath_len);
 
   char *head = strcpy(filepath, recording_dir);
@@ -358,23 +393,15 @@ int format_recording_directory(ControlData *control_data, char **filepath_ptr) {
   head += DATE_LEN;
   strcpy(head++, "/");
 
-  // create the date directory if it doesn't exist
-  struct stat st = {0};
-  if (stat(filepath, &st) == -1) {
-      mkdir(filepath, 0755);
-  }
-
   strcpy(head, control_data->hostname);
   head += strlen(control_data->hostname);
   strcpy(head++, "/");
 
-  // create the hostname directory if it doesn't exist
-  if (stat(filepath, &st) == -1) {
-      mkdir(filepath, 0755);
-  }
-
-  // if the directory doesn't exist, return -1
-  if (stat(filepath, &st) == -1) {
+  // create the full directory path (including rawStorage base and date subdir)
+  // all at once, so the program works even when rawStorage doesn't exist yet.
+  if (mkdirp(filepath, 0755) != 0) {
+    printf("Failed to create recording directory '%s': %s\n",
+           filepath, strerror(errno));
     free(*filepath_ptr);
     return -1;
   }

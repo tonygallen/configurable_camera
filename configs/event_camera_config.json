@@ -1,7 +1,7 @@
 {
     "Metadata":
     {
-        "Name":             "event",
+        "Name":             "event_cam_config",
         "Location":         "field",
         "Range":            500,
         "Yaw":              0,
@@ -14,14 +14,14 @@
     {
         "Record Raw":               false,
         "Raw Storage":              "/data/rec",
-        "Control IP":               "10.100.65.212",
+        "Control IP":               "127.0.0.1",
         "Control Port":             9000,
         "Status Broadcast Port":    9001,
         "Raw Time Limit":           600,
-        "RTSP Address":             "10.100.65.212",
+        "RTSP Address":             "127.0.0.1",
         "Sensor Type":              "event_camera",
-        "Event Camera Width":       1280,
-        "Event Camera Height":      720,
+        "Event Camera Width":       640,
+        "Event Camera Height":      480,
         "Event Camera Frame Rate":  30,
         "Hardware Scripts":         []
     }

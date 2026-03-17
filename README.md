@@ -10,6 +10,7 @@ Based on a previous Python-based implementation by David Bolme.
 ### Helpful Links
 - [Installation](#installation)
 - [User Manual](docs/Manual.md)
+- [Event Camera Quickstart](docs/Event_Camera.md)
 
 ### Repository Structure
 | File/Directory | Description |
@@ -21,9 +22,11 @@ Based on a previous Python-based implementation by David Bolme.
 | `scripts/`    | some installation and testing scripts              |
 | `src/`        | location for all source code (.c) files            |
 | `tests/`		| tests (probably out-of-date)                       |
+| `configs/`	| example configuration files                        |
 | `config.json`	| configuration file for system settings             |
 | `Makefile`	| main and test compilation recipes                  |
-| `pipeline.txt`| the gstreamer pipeline used by the RTSP server     |
+| `pipeline.txt`| GStreamer pipeline for Basler/Pylon sensors        |
+| `pipeline_event_camera.txt` | GStreamer pipeline for event cameras  |
 | `README.md`	| you are here                                       |
 | `run.sh`      | startup script                                     |
 

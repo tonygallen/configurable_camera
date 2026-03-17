@@ -21,6 +21,7 @@
 #define DEFAULT_CONFIG_JSON "config.json"
 #define DEFAULT_SENSOR_JSON "sensor.json"
 #define DEFAULT_PIPELINE_TXT "pipeline.txt"
+#define DEFAULT_EVENT_CAMERA_PIPELINE_TXT "pipeline_event_camera.txt"
 
 // TODO: I think this should have external linkage, probably shouldn't be static as it's passed into pipeline_data
 // and potentially accessed elsewhere
@@ -69,78 +70,118 @@ int main(int argc, char* argv[]){
 
     ControlData *control_data = NULL;
     Metadata *metadata = NULL;
-    SensorSetupInfo *sensor_setup_info;
+    SensorSetupInfo *sensor_setup_info = NULL;
     UDPListener *udp_listener;
     PipelineData pipeline_data;
     StatusBroadcast status_broadcast;
+    gchar *config_path_for_copy = NULL;
 
     loop = g_main_loop_new(NULL, FALSE);
 
-    // Load sensor info from the setup file written by ./sensor_setup
-    pipeline_data.sensor_setup_info = sensor_setup_info
-        = loadSensorSetupInfo(sensor_file);
-
-    g_free(sensor_file);
-
-    if (sensor_setup_info == NULL) {
-        timestamp_prefix_err();
-        g_printerr("Failed to load sensor setup info.\n");
-        err_code = EXIT_FAILURE;
-        goto cleanup_loop;
-    }
-
-    // ---------- Read in config ---------- 
+    // ---------- Read in config first to determine sensor type ----------
     int read_config_ret = readConfigFile(config_file, &control_data, &metadata);
 
+    // Save the path now so we can copy it to the recording directory as startup
+    // metadata later, after config_file has been freed.
+    config_path_for_copy = g_strdup(config_file);
     g_free(config_file);
 
     if (read_config_ret != 0) {
         timestamp_prefix_err();
         g_printerr("Couldn't read config file.\n");
         err_code = EXIT_FAILURE;
-        goto cleanup_sensor_setup_info;
+        g_free(config_path_for_copy);
+        goto cleanup_loop;
     }
     timestamp_prefix_log();
     g_print("Successfully read config file, verify values are correct:\n");
     printConfigSummary(control_data, metadata, control_data->head);
 
+    int is_event_camera = is_event_camera_sensor(control_data);
+
+    // Load sensor info from the setup file written by ./sensor_setup.
+    // Not required for event camera mode.
+    if (!is_event_camera) {
+        pipeline_data.sensor_setup_info = sensor_setup_info
+            = loadSensorSetupInfo(sensor_file);
+
+        if (sensor_setup_info == NULL) {
+            timestamp_prefix_err();
+            g_printerr("Failed to load sensor setup info.\n");
+            err_code = EXIT_FAILURE;
+            g_free(sensor_file);
+            goto cleanup_config;
+        }
+    } else {
+        pipeline_data.sensor_setup_info = sensor_setup_info = NULL;
+    }
+    g_free(sensor_file);
+
 
     // ---------- Format pipeline description ---------- 
-    char *pipeline_string_format = gst_pipeline_txt_gen(pipeline_file, control_data->recordRaw);
+    char *pipeline_string_format = NULL;
+    char *pipeline_string = NULL;
 
-    g_free(pipeline_file);
+    if (is_event_camera) {
+        // Event camera: load pipeline_event_camera.txt
+        g_free(pipeline_file);
+        pipeline_file = g_strdup_printf("%s/%s", working_directory,
+                                        DEFAULT_EVENT_CAMERA_PIPELINE_TXT);
+        pipeline_string_format = gst_pipeline_txt_gen(pipeline_file, control_data->recordRaw);
+        g_free(pipeline_file);
 
-    if (pipeline_string_format == NULL) {
-        timestamp_prefix_err();
-        g_printerr("Couldn't read pipeline setup file.\n");
-        err_code = EXIT_FAILURE;
-        goto cleanup_config;
-    }
+        if (pipeline_string_format == NULL) {
+            timestamp_prefix_err();
+            g_printerr("Couldn't read event camera pipeline setup file.\n");
+            err_code = EXIT_FAILURE;
+            goto cleanup_config;
+        }
 
-    char *bayer2rgb_with_link;
+        int ec_width     = control_data->eventCameraWidth  > 0
+                               ? control_data->eventCameraWidth  : 640;
+        int ec_height    = control_data->eventCameraHeight > 0
+                               ? control_data->eventCameraHeight : 480;
+        int ec_framerate = control_data->eventCameraFrameRate > 0
+                               ? control_data->eventCameraFrameRate : 30;
 
-    if (sensor_setup_info->is_color) {
-        // format in the bayer to rgb element if needed
-        bayer2rgb_with_link = " bayer2rgb !";
+        // Four %d placeholders: width, height, framerate (caps), framerate (converter)
+        pipeline_string = g_strdup_printf(pipeline_string_format,
+                                          ec_width, ec_height,
+                                          ec_framerate, ec_framerate);
     } else {
-        // otherwise leave it alone, it's grayscale
-        bayer2rgb_with_link = "";
+        // Pylon path: load pipeline.txt and format with sensor settings
+        pipeline_string_format = gst_pipeline_txt_gen(pipeline_file, control_data->recordRaw);
+        g_free(pipeline_file);
+
+        if (pipeline_string_format == NULL) {
+            timestamp_prefix_err();
+            g_printerr("Couldn't read pipeline setup file.\n");
+            err_code = EXIT_FAILURE;
+            goto cleanup_config;
+        }
+
+        char *bayer2rgb_with_link;
+        if (sensor_setup_info->is_color) {
+            bayer2rgb_with_link = " bayer2rgb !";
+        } else {
+            bayer2rgb_with_link = "";
+        }
+        pipeline_string = g_strdup_printf(pipeline_string_format,
+            sensor_setup_info->exposure_time,
+            sensor_setup_info->exposure_auto,
+            sensor_setup_info->gain,
+            sensor_setup_info->gain_auto,
+            sensor_setup_info->full_caps_string, bayer2rgb_with_link);
     }
-    // replace the %s in the string loaded from the text file with the sensor caps.
-    // This is so sensor settings are set at pipeline creation.
-    // format sensor settings, caps and bayer2rgb_with_link
-	char *pipeline_string = g_strdup_printf(pipeline_string_format,
-        sensor_setup_info->exposure_time,
-        sensor_setup_info->exposure_auto,
-        sensor_setup_info->gain,
-        sensor_setup_info->gain_auto,
-        sensor_setup_info->full_caps_string, bayer2rgb_with_link);
+
+    free(pipeline_string_format);
+    pipeline_string_format = NULL;
 
 	if (pipeline_string == NULL) {
 		timestamp_prefix_err();
 		g_printerr("Failed to format pipeline string.\n");
 		err_code = EXIT_FAILURE;
-		goto cleanup_hardware_scripts;
+		goto cleanup_config;
 	}
 
     g_print("Base pipeline:\n%s\n", pipeline_string);
@@ -164,7 +205,9 @@ int main(int argc, char* argv[]){
         goto cleanup_pipeline_string;
     }
 
-    int n = copy_file(DEFAULT_CONFIG_FILEPATH, startup_metadata_filepath);
+    int n = copy_file(config_path_for_copy, startup_metadata_filepath);
+    g_free(config_path_for_copy);
+    config_path_for_copy = NULL;
     g_free(startup_metadata_filepath);
     if (n != 0) {
         timestamp_prefix_err();
@@ -183,6 +226,15 @@ int main(int argc, char* argv[]){
     pipeline_data.is_streaming = FALSE;
     pipeline_data.is_raw_recording = FALSE;
     pipeline_data.recording_filepath = NULL;
+    pipeline_data.faery_channel = NULL;
+    pipeline_data.faery_watch_id = 0;
+    pipeline_data.faery_feeder_pid = 0;
+    pipeline_data.faery_pts = 0;
+    pipeline_data.faery_partial_buf = NULL;
+    pipeline_data.faery_bytes_accumulated = 0;
+    pipeline_data.faery_priming_timer_id = 0;
+    pipeline_data.faery_stderr_channel = NULL;
+    pipeline_data.faery_stderr_watch_id = 0;
 
     // Set up ancillary metadata pipeline
     pipeline_data.csv_pipeline = gst_pipeline_new("csv_pipeline");
@@ -224,9 +276,14 @@ int main(int argc, char* argv[]){
 
     g_signal_connect(rtsp_media_factory, "media-configure", (GCallback)media_configure, (gpointer) &pipeline_data);
 
-    // the mount point will be configname_sensorname:
+    // the mount point will be configname_sensorname (pylon) or configname_event_camera:
     // EX: rtsp://127.0.0.1:8554/config1_acA2040-120uc
-    gchar *mount_point_str = g_strdup_printf("/%s_%s", metadata->name, sensor_setup_info->name);
+    gchar *mount_point_str;
+    if (is_event_camera) {
+        mount_point_str = g_strdup_printf("/%s_event_camera", metadata->name);
+    } else {
+        mount_point_str = g_strdup_printf("/%s_%s", metadata->name, sensor_setup_info->name);
+    }
     gst_rtsp_mount_points_add_factory(rtsp_mount_points, mount_point_str, rtsp_media_factory);
     g_object_unref(rtsp_mount_points);
     guint rtsp_server_id = gst_rtsp_server_attach(rtsp_server, NULL);
@@ -344,6 +401,7 @@ int main(int argc, char* argv[]){
 	cleanup_pipeline_string:
 		g_free(pipeline_string);
     cleanup_config:
+        g_free(config_path_for_copy);
         free_Metadata(metadata);
         free_ControlData(control_data);
     cleanup_sensor_setup_info:

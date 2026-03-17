@@ -19,7 +19,12 @@ gboolean restart_file_limit_timer(PipelineData *pipeline_data) {
 }
 
 gboolean record_raw(PipelineData *pipeline_data, char *trigger_timestamp) {
-    
+
+    if (pipeline_data->sink == NULL) {
+        // Raw recording is not configured (no splitmuxsink in pipeline).
+        return FALSE;
+    }
+
     restart_file_limit_timer(pipeline_data);
 
     ControlData *control_data = pipeline_data->control_data;
@@ -45,6 +50,11 @@ gboolean record_raw(PipelineData *pipeline_data, char *trigger_timestamp) {
 }
 
 gboolean stop_record_raw(PipelineData *pipeline_data) {
+
+    if (pipeline_data->sink == NULL) {
+        // Raw recording is not configured (no splitmuxsink in pipeline).
+        return FALSE;
+    }
 
     restart_file_limit_timer(pipeline_data);
 

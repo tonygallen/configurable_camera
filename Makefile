@@ -1,7 +1,7 @@
 CC=gcc
 CPPFLAGS := -Iinclude
 
-PKG=`pkg-config --cflags --libs gstreamer-rtsp-server-1.0 gstreamer-rtsp-1.0 gstreamer-video-1.0 gstreamer-1.0 glib-2.0`
+PKG=`pkg-config --cflags --libs gstreamer-rtsp-server-1.0 gstreamer-rtsp-1.0 gstreamer-video-1.0 gstreamer-1.0 gstreamer-app-1.0 glib-2.0`
 CFLAGS=-g -O2 -Wno-deprecated-declarations $(PKG)
 DEV_CFLAGS=-g -Wall -Wno-deprecated-declarations $(PKG)
 

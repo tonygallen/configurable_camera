@@ -147,10 +147,11 @@ gboolean status_broadcaster(gpointer data) {
   PipelineData *pipeline_data = status_broadcast->pipeline_data;
   ControlData *control_data = pipeline_data->control_data;
   freeSensorDynamicInfo(status_broadcast->sensor_info);
-  if(pipeline_data->is_streaming) {
+  int is_event_camera = is_event_camera_sensor(control_data);
+  if (pipeline_data->is_streaming && !is_event_camera) {
     status_broadcast->sensor_info = getSensorDynamicInfo(pipeline_data->source);
   } else {
-    freeSensorDynamicInfo(status_broadcast->sensor_info);
+    status_broadcast->sensor_info = NULL;
   }
 
   // Get stats on filesystem
