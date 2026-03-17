@@ -6,7 +6,7 @@
 #   1. The feeder starts and produces frames (real camera or test pattern).
 #   2. The GStreamer encode path (rawvideoparse → videoconvert → nvvidconv →
 #      nvv4l2h264enc) accepts the frames.
-#   3. The encoded output is written to an .mp4 file you can inspect.
+#   3. The encoded output is written to a .mkv file you can inspect.
 #
 # Usage (run from the repository root):
 #   ./scripts/test_event_camera_feeder.sh
@@ -25,14 +25,14 @@
 #   caps=video/x-raw,format=RGB,... so nvvidconv already knows the buffer format
 #   and rawvideoparse + videoconvert are NOT needed there.
 #
-# Note on duration / EOS:
-#   We do NOT use num-buffers on fdsrc.  A Linux FIFO delivers data in kernel pipe
-#   buffer chunks (~64 KB), so fdsrc.read() returns far fewer bytes than blocksize
-#   on each call.  num-buffers counts read() calls, not complete video frames, so
-#   300 "buffers" would terminate after only ~7 frames.  Instead we run gst-launch
-#   in the background and send it SIGINT after ${DURATION} seconds.  gst-launch
-#   handles SIGINT by pushing EOS through the pipeline, which causes mp4mux to
-#   write the file trailer and finalise the output correctly.
+# Note on output format (MKV not MP4):
+#   mp4mux writes its moov atom (the metadata that makes a file playable) only when
+#   it receives a clean EOS.  When gst-launch receives SIGINT it sends EOS to the
+#   source, but with hardware encoding (nvv4l2h264enc) the EOS may not finish
+#   propagating before gst-launch sets the pipeline to NULL, leaving the moov atom
+#   missing and an unplayable file.  matroskamux (MKV) writes its track headers at
+#   the start of the file, so the output is playable even if the muxer doesn't close
+#   cleanly.  VLC on macOS and Linux plays .mkv natively.
 
 set -euo pipefail
 
@@ -58,7 +58,7 @@ done
 
 FRAME_SIZE=$(( WIDTH * HEIGHT * 3 ))
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-OUT_FILE="/tmp/event_camera_test_${TIMESTAMP}.mp4"
+OUT_FILE="/tmp/event_camera_test_${TIMESTAMP}.mkv"
 FIFO="$(mktemp -u /tmp/event_camera_feeder_XXXXXX.fifo)"
 mkfifo "${FIFO}"
 
@@ -149,14 +149,14 @@ else
         ! "video/x-raw(memory:NVMM),format=I420" \
         ! nvv4l2h264enc bitrate=5000000 \
         ! h264parse \
-        ! mp4mux \
+        ! matroskamux \
         ! filesink location="${OUT_FILE}" &
 fi
 GST_PID=$!
 
 # Wait for DURATION seconds then send SIGINT to gst-launch.
-# SIGINT causes gst-launch to push EOS through the pipeline so mp4mux writes
-# its file trailer and the output is a valid, playable mp4.
+# SIGINT causes gst-launch to push EOS through the pipeline; matroskamux writes
+# any remaining cluster data and the output is a valid, playable .mkv file.
 sleep "${DURATION}"
 echo ""
 echo "Duration reached — sending EOS to pipeline..."
