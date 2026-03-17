@@ -156,14 +156,14 @@ rtsp://192.168.1.100:8554/evk4_event_camera
 You can test the stream with VLC or GStreamer on another machine:
 
 ```bash
-# VLC
-vlc rtsp://192.168.1.100:8554/evk4_event_camera
+# VLC — the --network-caching flag cuts the client-side jitter buffer from 1000 ms to 200 ms
+vlc --network-caching=200 rtsp://192.168.1.100:8554/evk4_event_camera
 
-# GStreamer
+# GStreamer — latency=0 tells the rtspsrc not to buffer any additional jitter delay
 gst-launch-1.0 rtspsrc location=rtsp://192.168.1.100:8554/evk4_event_camera latency=0 ! decodebin ! autovideosink
 ```
 
-> **Note for Jetsons:** `autovideosink` may not work; use `xvimagesink` instead.
+> **Note for Jetsons:** `autovideosink` may not work; use `nv3dsink` or `xvimagesink` instead.
 
 ## 7. Stop the stream
 
@@ -192,6 +192,7 @@ screen -r camera   # attach to the screen session
 | `Event camera source setup failed` | faery library not installed or camera not detected | Check `python3 scripts/event_camera_frame_feeder.py --help` runs; confirm the event camera is connected |
 | RTSP stream shows grey ramp pattern | faery is not installed (feeder uses fallback test pattern) | Install faery: see [faery documentation](https://github.com/neuromorphic-paris/faery) |
 | No stream / client cannot connect | RTSP server bound to wrong address | Check `"RTSP Address"` in `config.json` is the interface facing the client |
+| Stream has high latency (3–5 seconds) | Three stacked delays: (1) VLC client jitter buffer default 1000 ms; (2) old pipeline buffered up to 1 s in the `rtsp_queue`; (3) H.264 High profile allows B-frame look-ahead. | Pull latest code and rebuild (`make main`) — queue is now leaky with a 2-frame cap and encoder uses Baseline profile. Connect VLC with `vlc --network-caching=200 rtsp://...` to cut the client buffer to 200 ms. |
 
 ## How it works
 
