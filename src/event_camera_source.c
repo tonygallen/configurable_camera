@@ -19,9 +19,47 @@
 #define DEFAULT_EVENT_CAMERA_HEIGHT 480
 #define DEFAULT_EVENT_CAMERA_FRAMERATE 30
 
+/* Relay one line from the feeder's stderr to the main log with a timestamp. */
+static gboolean faery_stderr_callback(GIOChannel *source,
+                                       GIOCondition condition,
+                                       gpointer data) {
+    (void)data;
+    gchar *line = NULL;
+    gsize length = 0;
+    GError *err = NULL;
+    GIOStatus status = g_io_channel_read_line(source, &line, &length, NULL, &err);
+
+    if (status == G_IO_STATUS_NORMAL && line != NULL) {
+        // Strip trailing newline for cleaner log output.
+        if (length > 0 && line[length - 1] == '\n')
+            line[length - 1] = '\0';
+        timestamp_prefix_log();
+        g_print("[feeder] %s\n", line);
+        g_free(line);
+        return G_SOURCE_CONTINUE;
+    }
+    if (err != NULL) {
+        timestamp_prefix_err();
+        g_printerr("Error reading feeder stderr: %s\n", err->message);
+        g_error_free(err);
+    }
+    if (status == G_IO_STATUS_EOF || status == G_IO_STATUS_ERROR) {
+        g_free(line);
+        return G_SOURCE_REMOVE;
+    }
+    g_free(line);
+    return G_SOURCE_CONTINUE;
+}
+
 /* Push one black (all-zeros) frame to keep the RTSP pipeline warm while the
  * Python feeder subprocess is starting up.  Cancelled as soon as the first
  * real frame arrives via the G_IO_IN watch.
+ *
+ * With is-live=true, gst_app_src_push_buffer returns GST_FLOW_FLUSHING while
+ * the pipeline is in PAUSED state (i.e. between the RTSP SETUP and PLAY
+ * requests).  This is a transient condition — we keep the timer running and
+ * retry on the next tick.  We only stop on GST_FLOW_EOS, which indicates that
+ * the pipeline has ended and will not accept any more data.
  */
 static gboolean push_priming_frame(gpointer data) {
     PipelineData *pipeline_data = data;
@@ -38,7 +76,6 @@ static gboolean push_priming_frame(gpointer data) {
 
     guint8 *black = g_malloc0(frame_size);  // all zeros = black
     if (black == NULL) {
-        // Allocation failure is extremely unlikely; log once and keep trying.
         timestamp_prefix_err();
         g_printerr("Failed to allocate priming frame buffer.\n");
         return G_SOURCE_CONTINUE;
@@ -58,11 +95,16 @@ static gboolean push_priming_frame(gpointer data) {
 
     GstFlowReturn ret = gst_app_src_push_buffer(
         GST_APP_SRC(pipeline_data->source), buf);
-    if (ret == GST_FLOW_FLUSHING || ret == GST_FLOW_EOS) {
-        // Pipeline is shutting down; stop the timer.
+
+    if (ret == GST_FLOW_EOS) {
+        // Pipeline has ended — no point pushing more frames.
+        timestamp_prefix_log();
+        g_print("Priming timer: appsrc returned EOS, stopping.\n");
         pipeline_data->faery_priming_timer_id = 0;
         return G_SOURCE_REMOVE;
     }
+    // GST_FLOW_FLUSHING is expected while the pipeline is in PAUSED state
+    // (live appsrc before the RTSP client sends PLAY).  Keep trying.
 
     return G_SOURCE_CONTINUE;
 }
@@ -127,6 +169,8 @@ static gboolean faery_frame_received_callback(GIOChannel *source,
     if (pipeline_data->faery_priming_timer_id != 0) {
         g_source_remove(pipeline_data->faery_priming_timer_id);
         pipeline_data->faery_priming_timer_id = 0;
+        timestamp_prefix_log();
+        g_print("First real frame received; priming timer cancelled.\n");
     }
 
     // Reset the accumulator so the next frame starts fresh even if
@@ -183,6 +227,7 @@ int setup_event_camera_source(PipelineData *pipeline_data) {
 
     GError *error = NULL;
     gint stdout_fd = -1;
+    gint stderr_fd = -1;
     gboolean spawned = g_spawn_async_with_pipes(
         NULL,                        /* working directory (inherit) */
         argv,
@@ -192,7 +237,7 @@ int setup_event_camera_source(PipelineData *pipeline_data) {
         &pipeline_data->faery_feeder_pid,
         NULL,                        /* stdin fd */
         &stdout_fd,                  /* stdout fd */
-        NULL,                        /* stderr fd */
+        &stderr_fd,                  /* stderr fd — captured for logging */
         &error
     );
 
@@ -209,9 +254,20 @@ int setup_event_camera_source(PipelineData *pipeline_data) {
         return -1;
     }
 
+    // Set up a non-blocking channel on the feeder's stdout for frame data.
     pipeline_data->faery_channel = g_io_channel_unix_new(stdout_fd);
     g_io_channel_set_encoding(pipeline_data->faery_channel, NULL, NULL);
     g_io_channel_set_flags(pipeline_data->faery_channel, G_IO_FLAG_NONBLOCK, NULL);
+
+    // Set up a line-buffered channel on the feeder's stderr for log messages.
+    // This lets us see Python tracebacks and neuromorphic_drivers output with
+    // timestamps in the main log.
+    pipeline_data->faery_stderr_channel = g_io_channel_unix_new(stderr_fd);
+    g_io_channel_set_flags(pipeline_data->faery_stderr_channel,
+                           G_IO_FLAG_NONBLOCK, NULL);
+    pipeline_data->faery_stderr_watch_id = g_io_add_watch(
+        pipeline_data->faery_stderr_channel, G_IO_IN | G_IO_HUP,
+        (GIOFunc)faery_stderr_callback, pipeline_data);
 
     pipeline_data->faery_pts              = 0;
     pipeline_data->faery_partial_buf      = NULL;
@@ -233,8 +289,8 @@ int setup_event_camera_source(PipelineData *pipeline_data) {
         (GIOFunc)faery_frame_received_callback, pipeline_data);
 
     timestamp_prefix_log();
-    g_print("Event camera source set up (PID: %d).\n",
-            (int)pipeline_data->faery_feeder_pid);
+    g_print("Event camera source set up (PID: %d, %dx%d @ %d fps).\n",
+            (int)pipeline_data->faery_feeder_pid, width, height, frame_rate);
     return 0;
 }
 
@@ -252,6 +308,11 @@ void cleanup_event_camera_source(PipelineData *pipeline_data) {
         pipeline_data->faery_watch_id = 0;
     }
 
+    if (pipeline_data->faery_stderr_watch_id != 0) {
+        g_source_remove(pipeline_data->faery_stderr_watch_id);
+        pipeline_data->faery_stderr_watch_id = 0;
+    }
+
     if (pipeline_data->faery_channel != NULL) {
         GError *err = NULL;
         g_io_channel_shutdown(pipeline_data->faery_channel, FALSE, &err);
@@ -262,6 +323,18 @@ void cleanup_event_camera_source(PipelineData *pipeline_data) {
         }
         g_io_channel_unref(pipeline_data->faery_channel);
         pipeline_data->faery_channel = NULL;
+    }
+
+    if (pipeline_data->faery_stderr_channel != NULL) {
+        GError *err = NULL;
+        g_io_channel_shutdown(pipeline_data->faery_stderr_channel, FALSE, &err);
+        if (err != NULL) {
+            timestamp_prefix_err();
+            g_printerr("Error closing feeder stderr channel: %s\n", err->message);
+            g_error_free(err);
+        }
+        g_io_channel_unref(pipeline_data->faery_stderr_channel);
+        pipeline_data->faery_stderr_channel = NULL;
     }
 
     if (pipeline_data->faery_feeder_pid != 0) {

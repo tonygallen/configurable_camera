@@ -233,6 +233,8 @@ int main(int argc, char* argv[]){
     pipeline_data.faery_partial_buf = NULL;
     pipeline_data.faery_bytes_accumulated = 0;
     pipeline_data.faery_priming_timer_id = 0;
+    pipeline_data.faery_stderr_channel = NULL;
+    pipeline_data.faery_stderr_watch_id = 0;
 
     // Set up ancillary metadata pipeline
     pipeline_data.csv_pipeline = gst_pipeline_new("csv_pipeline");
