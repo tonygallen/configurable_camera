@@ -12,8 +12,11 @@
 #   ./scripts/test_event_camera_feeder.sh
 #   ./scripts/test_event_camera_feeder.sh --test-pattern        # no camera required
 #   ./scripts/test_event_camera_feeder.sh --duration 5          # record 5 seconds
-#   ./scripts/test_event_camera_feeder.sh --display             # show live preview (requires $DISPLAY / nv3dsink)
+#   ./scripts/test_event_camera_feeder.sh --display             # live preview (needs $DISPLAY / nv3dsink)
 #   ./scripts/test_event_camera_feeder.sh --width 640 --height 480 --fps 30
+#
+# If real-camera mode exits immediately, check the feeder stderr output printed
+# above the GStreamer output — it will show the Python traceback.
 #
 # Note on rawvideoparse / videoconvert in this script vs. pipeline_event_camera.txt:
 #   This test script reads from a plain FIFO via fdsrc, which has no GStreamer caps
@@ -21,6 +24,15 @@
 #   The RTSP pipeline (pipeline_event_camera.txt) uses appsrc with explicit
 #   caps=video/x-raw,format=RGB,... so nvvidconv already knows the buffer format
 #   and rawvideoparse + videoconvert are NOT needed there.
+#
+# Note on duration / EOS:
+#   We do NOT use num-buffers on fdsrc.  A Linux FIFO delivers data in kernel pipe
+#   buffer chunks (~64 KB), so fdsrc.read() returns far fewer bytes than blocksize
+#   on each call.  num-buffers counts read() calls, not complete video frames, so
+#   300 "buffers" would terminate after only ~7 frames.  Instead we run gst-launch
+#   in the background and send it SIGINT after ${DURATION} seconds.  gst-launch
+#   handles SIGINT by pushing EOS through the pipeline, which causes mp4mux to
+#   write the file trailer and finalise the output correctly.
 
 set -euo pipefail
 
@@ -45,7 +57,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 FRAME_SIZE=$(( WIDTH * HEIGHT * 3 ))
-NUM_BUFFERS=$(( FPS * DURATION ))
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 OUT_FILE="/tmp/event_camera_test_${TIMESTAMP}.mp4"
 FIFO="$(mktemp -u /tmp/event_camera_feeder_XXXXXX.fifo)"
@@ -54,7 +65,7 @@ mkfifo "${FIFO}"
 echo "=== Event camera feeder test ==="
 echo "  Resolution : ${WIDTH}x${HEIGHT} @ ${FPS} fps"
 echo "  Frame size : ${FRAME_SIZE} bytes"
-echo "  Duration   : ${DURATION} s (${NUM_BUFFERS} frames)"
+echo "  Duration   : ${DURATION} s"
 if [[ $TEST_PATTERN -eq 1 ]]; then
     echo "  Mode       : test pattern (no camera)"
 else
@@ -67,9 +78,17 @@ else
 fi
 echo ""
 
+GST_PID=""
+FEEDER_PID=""
+
 cleanup() {
     echo ""
     echo "Stopping..."
+    # Send SIGINT to gst-launch for graceful EOS / file finalisation.
+    kill -INT "${GST_PID:-}" 2>/dev/null || true
+    wait "${GST_PID:-}" 2>/dev/null || true
+    # Close the FIFO read end so the feeder gets SIGPIPE on its next write.
+    exec 3<&- 2>/dev/null || true
     kill "${FEEDER_PID:-}" 2>/dev/null || true
     wait "${FEEDER_PID:-}" 2>/dev/null || true
     rm -f "${FIFO}"
@@ -101,33 +120,28 @@ else
     FEEDER_PID=$!
 fi
 
-# Read the FIFO with gst-launch-1.0 using fdsrc.
-# Pipeline notes:
-#   fdsrc          — raw byte source from the FIFO (no caps metadata)
-#   rawvideoparse  — frames the byte stream into properly-described video buffers;
-#                    without this, nvvidconv sees raw bytes and refuses to link
-#   videoconvert   — CPU-side RGB → I420; nvvidconv on Jetson does not accept RGB
-#                    from non-hardware-allocated buffers (fdsrc / rawvideoparse)
-#   nvvidconv      — moves frames from system memory into NVMM memory for the encoder
-#
-# num-buffers=N causes gst-launch-1.0 to send EOS after N frames so the output
-# file is properly finalised without needing a Ctrl-C.
+# Open the FIFO read end on fd 3.
 exec 3< "${FIFO}"
 
+# Pipeline notes:
+#   fdsrc         — raw byte source from the FIFO (no caps metadata)
+#   rawvideoparse — re-frames the byte stream into video buffers with proper caps;
+#                   without this, downstream elements see raw bytes with no format info
+#   videoconvert  — CPU-side RGB → I420; nvvidconv on Jetson does not accept RGB
+#                   directly from non-hardware-allocated buffers
+#   nvvidconv     — copies frames from system memory into NVMM memory for the encoder
 if [[ $DISPLAY_MODE -eq 1 ]]; then
-    # Live preview — requires a display (nv3dsink, Jetson with attached screen).
     gst-launch-1.0 \
-        fdsrc fd=3 blocksize="${FRAME_SIZE}" num-buffers="${NUM_BUFFERS}" \
+        fdsrc fd=3 blocksize="${FRAME_SIZE}" \
         ! rawvideoparse format=rgb width="${WIDTH}" height="${HEIGHT}" framerate="${FPS}/1" \
         ! videoconvert \
         ! "video/x-raw,format=I420" \
         ! nvvidconv \
         ! "video/x-raw(memory:NVMM),format=I420" \
-        ! nv3dsink sync=false
+        ! nv3dsink sync=false &
 else
-    # Headless: encode and write to an mp4 file.
     gst-launch-1.0 \
-        fdsrc fd=3 blocksize="${FRAME_SIZE}" num-buffers="${NUM_BUFFERS}" \
+        fdsrc fd=3 blocksize="${FRAME_SIZE}" \
         ! rawvideoparse format=rgb width="${WIDTH}" height="${HEIGHT}" framerate="${FPS}/1" \
         ! videoconvert \
         ! "video/x-raw,format=I420" \
@@ -136,10 +150,25 @@ else
         ! nvv4l2h264enc bitrate=5000000 \
         ! h264parse \
         ! mp4mux \
-        ! filesink location="${OUT_FILE}"
-    echo ""
-    echo "Output written to: ${OUT_FILE}"
-    echo "File size: $(du -h "${OUT_FILE}" | cut -f1)"
+        ! filesink location="${OUT_FILE}" &
 fi
+GST_PID=$!
 
-exec 3<&-
+# Wait for DURATION seconds then send SIGINT to gst-launch.
+# SIGINT causes gst-launch to push EOS through the pipeline so mp4mux writes
+# its file trailer and the output is a valid, playable mp4.
+sleep "${DURATION}"
+echo ""
+echo "Duration reached — sending EOS to pipeline..."
+kill -INT "${GST_PID}" 2>/dev/null || true
+wait "${GST_PID}" 2>/dev/null || true
+GST_PID=""
+
+if [[ $DISPLAY_MODE -eq 0 ]]; then
+    echo "Output written to: ${OUT_FILE}"
+    if [[ -f "${OUT_FILE}" ]]; then
+        echo "File size: $(du -h "${OUT_FILE}" | cut -f1)"
+    else
+        echo "WARNING: output file not found — pipeline may have failed"
+    fi
+fi
