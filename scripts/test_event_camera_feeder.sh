@@ -86,10 +86,19 @@ else
 fi
 
 # Read the FIFO with gst-launch-1.0 using fdsrc.
+# Pipeline notes:
+#   fdsrc       — raw byte source from the FIFO
+#   rawvideoparse — frames the byte stream into properly-described video buffers
+#                   (without this, nvvidconv cannot link: it sees raw bytes, not video frames)
+#   videoconvert — CPU-side RGB → I420 conversion (nvvidconv on Jetson does not
+#                  accept RGB directly when the source is fdsrc)
+#   nvvidconv   — moves frames from system memory into NVMM memory
 exec 3< "${FIFO}"
 gst-launch-1.0 \
     fdsrc fd=3 blocksize="${FRAME_SIZE}" \
-    ! "video/x-raw,format=RGB,width=${WIDTH},height=${HEIGHT},framerate=${FPS}/1" \
+    ! rawvideoparse format=rgb width="${WIDTH}" height="${HEIGHT}" framerate="${FPS}/1" \
+    ! videoconvert \
+    ! "video/x-raw,format=I420" \
     ! nvvidconv \
     ! "video/x-raw(memory:NVMM),format=I420" \
     ! nvv4l2h264enc bitrate=5000000 \
